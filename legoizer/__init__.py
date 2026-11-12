@@ -19,7 +19,7 @@ from .lego_colors import LEGO_COLORS, LDRAW_CODE
 bl_info = {
     "name": "LEGO-izer (OBJ to bricks)",
     "author": "lego-izer",
-    "version": (1, 4, 0),
+    "version": (1, 5, 0),
     "blender": (3, 0, 0),
     "location": "3D View > Sidebar (N) > LEGO",
     "description": "Convert an OBJ mesh into LEGO bricks: parts list, "
@@ -66,10 +66,35 @@ def material_rgb(material):
     return tuple(material.diffuse_color[:3])
 
 
-def compute_scale(bb_min, bb_max, units, scale_mode, scale_value):
-    """Wrapper around lego_core.compute_scale taking a unit name."""
-    return lego_core.compute_scale(bb_min, bb_max, MM_PER_UNIT[units],
+def compute_scale(bb_min, bb_max, mm_per_unit, scale_mode, scale_value):
+    """Wrapper around lego_core.compute_scale."""
+    return lego_core.compute_scale(bb_min, bb_max, mm_per_unit,
                                    scale_mode, scale_value)
+
+
+def scene_mm_per_unit(context):
+    """mm per Blender unit according to the scene's unit settings."""
+    settings = context.scene.unit_settings
+    scale = settings.scale_length if settings.scale_length else 1.0
+    if settings.system == "IMPERIAL":
+        return 1000.0 * 0.3048 * scale
+    return 1000.0 * scale
+
+
+def selection_size(context):
+    """World-space bounding-box size of the selected mesh objects, in mm."""
+    from mathutils import Vector
+    objects = [o for o in context.selected_objects if o.type == "MESH"]
+    if not objects:
+        return None
+    corners = []
+    for o in objects:
+        corners.extend(o.matrix_world @ Vector(c) for c in o.bound_box)
+    bb_min = Vector((min(c.x for c in corners), min(c.y for c in corners),
+                     min(c.z for c in corners)))
+    bb_max = Vector((max(c.x for c in corners), max(c.y for c in corners),
+                     max(c.z for c in corners)))
+    return (bb_max - bb_min) * scene_mm_per_unit(context)
 
 
 def convert(input_path=None, out_dir="lego_out", units="m", scale_mode="UNITS",
@@ -121,9 +146,17 @@ def convert(input_path=None, out_dir="lego_out", units="m", scale_mode="UNITS",
     xs = [v.x for v in all_verts]
     ys = [v.y for v in all_verts]
     zs = [v.z for v in all_verts]
+    if selected_objects is not None:
+        mm_per_unit = scene_mm_per_unit(bpy.context)
+        print(f"Selection raw size: "
+              f"{max(xs)-min(xs):.4f} x {max(ys)-min(ys):.4f} x "
+              f"{max(zs)-min(zs):.4f} Blender units, "
+              f"scene unit = {mm_per_unit:.2f} mm/unit")
+    else:
+        mm_per_unit = MM_PER_UNIT[units]
     bb_min, bb_max, note = compute_scale(
         (min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs)),
-        units, scale_mode, scale_value)
+        mm_per_unit, scale_mode, scale_value)
     size_mm = tuple(bb_max[i] - bb_min[i] for i in range(3))
     print(note)
     print(f"LEGO size: {size_mm[0]:.1f} x {size_mm[1]:.1f} x {size_mm[2]:.1f} mm "
@@ -360,6 +393,12 @@ class LEGOIZER_PT_panel(bpy.types.Panel):
                                   if o.type == "MESH")
             layout.label(text=f"{selected_meshes} mesh object(s) selected",
                          icon="RESTRICT_SELECT_OFF")
+            size = selection_size(context)
+            if size:
+                layout.label(text=f"Measured: {size.x:.2f} x {size.y:.2f} x "
+                                  f"{size.z:.2f} mm")
+                layout.label(text=f"= {size.x/STUD:.1f} x {size.y/STUD:.1f} x "
+                                  f"{size.z/STUD:.1f} studs as-is")
         else:
             layout.prop(props, "filepath")
             layout.prop(props, "units")
