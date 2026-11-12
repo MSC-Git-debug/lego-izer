@@ -19,7 +19,7 @@ from .lego_colors import LEGO_COLORS, LDRAW_CODE
 bl_info = {
     "name": "LEGO-izer (OBJ to bricks)",
     "author": "lego-izer",
-    "version": (1, 1, 0),
+    "version": (1, 1, 1),
     "blender": (3, 0, 0),
     "location": "3D View > Sidebar (N) > LEGO",
     "description": "Convert an OBJ mesh into LEGO bricks: parts list, "
@@ -310,6 +310,8 @@ class LEGOIZER_PT_panel(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         props = context.scene.legoizer_props
+        layout.operator("legoizer.convert_from_panel", icon="MOD_BUILD")
+        layout.separator()
         layout.prop(props, "filepath")
         layout.prop(props, "out_dir")
         layout.prop(props, "units")
@@ -320,7 +322,6 @@ class LEGOIZER_PT_panel(bpy.types.Panel):
         layout.prop(props, "visualize")
         if props.visualize:
             layout.prop(props, "with_studs")
-        layout.operator("legoizer.convert_from_panel", icon="BRICKS")
 
 
 class LEGOIZER_OT_convert_from_panel(bpy.types.Operator):
