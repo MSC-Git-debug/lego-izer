@@ -19,7 +19,7 @@ from .lego_colors import LEGO_COLORS, LDRAW_CODE
 bl_info = {
     "name": "LEGO-izer (OBJ to bricks)",
     "author": "lego-izer",
-    "version": (1, 3, 0),
+    "version": (1, 4, 0),
     "blender": (3, 0, 0),
     "location": "3D View > Sidebar (N) > LEGO",
     "description": "Convert an OBJ mesh into LEGO bricks: parts list, "
@@ -72,14 +72,29 @@ def compute_scale(bb_min, bb_max, units, scale_mode, scale_value):
                                    scale_mode, scale_value)
 
 
-def convert(input_path, out_dir, units="m", scale_mode="UNITS", scale_value=1.0,
-            layer="brick", visualize=False, with_studs=False, color_map=None,
-            base_name="model"):
-    """Full OBJ -> LEGO pipeline. Returns (bricks, bb_min, layer_h)."""
+def convert(input_path=None, out_dir="lego_out", units="m", scale_mode="UNITS",
+            scale_value=1.0, layer="brick", visualize=False, with_studs=False,
+            color_map=None, base_name="model", selected_objects=None):
+    """Full mesh -> LEGO pipeline. Returns (bricks, bb_min, layer_h).
+
+    Either pass selected_objects (mesh objects already in the scene) or
+    input_path (an .obj file to import).
+    """
     layer_h = lego_core.PLATE_H if layer == "plate" else lego_core.BRICK_H
     os.makedirs(out_dir, exist_ok=True)
 
-    objects = import_obj(input_path)
+    if selected_objects is not None:
+        objects = [o for o in selected_objects if o.type == "MESH"]
+        if not objects:
+            raise RuntimeError("No mesh objects selected - select the part "
+                               "to convert in the viewport or outliner.")
+        print(f"Converting {len(objects)} selected mesh object(s): "
+              f"{', '.join(o.name for o in objects[:10])}")
+    elif input_path:
+        objects = import_obj(input_path)
+    else:
+        raise RuntimeError("Nothing to convert: select objects or provide "
+                           "an OBJ file.")
     depsgraph = bpy.context.evaluated_depsgraph_get()
 
     all_verts, all_polys, all_poly_colors = [], [], []
@@ -339,9 +354,16 @@ class LEGOIZER_PT_panel(bpy.types.Panel):
         props = context.scene.legoizer_props
         layout.operator("legoizer.convert_from_panel", icon="MOD_BUILD")
         layout.separator()
-        layout.prop(props, "filepath")
+        layout.prop(props, "source")
+        if props.source == "SELECTED":
+            selected_meshes = sum(1 for o in context.selected_objects
+                                  if o.type == "MESH")
+            layout.label(text=f"{selected_meshes} mesh object(s) selected",
+                         icon="RESTRICT_SELECT_OFF")
+        else:
+            layout.prop(props, "filepath")
+            layout.prop(props, "units")
         layout.prop(props, "out_dir")
-        layout.prop(props, "units")
         layout.prop(props, "scale_mode")
         if props.scale_mode != "UNITS":
             layout.prop(props, "scale_value")
@@ -359,15 +381,28 @@ class LEGOIZER_OT_convert_from_panel(bpy.types.Operator):
 
     def execute(self, context):
         props = context.scene.legoizer_props
-        if not props.filepath:
-            self.report({"ERROR"}, "Pick an .obj file first")
-            return {"CANCELLED"}
         out_dir = bpy.path.abspath(props.out_dir)
         try:
-            convert(props.filepath, out_dir, units=props.units,
-                    scale_mode=props.scale_mode, scale_value=props.scale_value,
-                    layer=props.layer, visualize=props.visualize,
-                    with_studs=props.with_studs)
+            if props.source == "SELECTED":
+                selected = context.selected_objects
+                base_name = next((o.name for o in selected
+                                  if o.type == "MESH"), "model")
+                convert(out_dir=out_dir, units=props.units,
+                        scale_mode=props.scale_mode,
+                        scale_value=props.scale_value, layer=props.layer,
+                        visualize=props.visualize, with_studs=props.with_studs,
+                        base_name=base_name, selected_objects=selected)
+            else:
+                if not props.filepath:
+                    self.report({"ERROR"}, "Pick an .obj file first")
+                    return {"CANCELLED"}
+                base_name = os.path.splitext(
+                    os.path.basename(props.filepath))[0]
+                convert(input_path=props.filepath, out_dir=out_dir,
+                        units=props.units, scale_mode=props.scale_mode,
+                        scale_value=props.scale_value, layer=props.layer,
+                        visualize=props.visualize, with_studs=props.with_studs,
+                        base_name=base_name)
         except Exception as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
@@ -377,6 +412,14 @@ class LEGOIZER_OT_convert_from_panel(bpy.types.Operator):
 
 
 class LEGOIZER_Props(bpy.types.PropertyGroup):
+    source: bpy.props.EnumProperty(
+        name="Source", items=[
+            ("SELECTED", "Selected objects",
+             "Convert the objects selected in the viewport/outliner - "
+             "modifiers are evaluated"),
+            ("OBJ_FILE", "OBJ file",
+             "Import and convert an .obj file")],
+        default="SELECTED")
     filepath: bpy.props.StringProperty(
         name="OBJ file", subtype="FILE_PATH",
         description="The .obj file to convert")
