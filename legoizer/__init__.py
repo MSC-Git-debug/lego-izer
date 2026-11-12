@@ -16,10 +16,16 @@ import json
 from . import lego_core
 from .lego_colors import LEGO_COLORS, LDRAW_CODE
 
+if getattr(lego_core, "CORE_VERSION", 0) < 2:
+    raise RuntimeError(
+        "Stale lego_core.py detected next to a newer LEGO-izer. Fix: "
+        "Edit > Preferences > Add-ons > remove LEGO-izer, restart "
+        "Blender, then install the current legoizer.zip and enable it.")
+
 bl_info = {
     "name": "LEGO-izer (OBJ to bricks)",
     "author": "lego-izer",
-    "version": (1, 6, 0),
+    "version": (1, 6, 1),
     "blender": (3, 0, 0),
     "location": "3D View > Sidebar (N) > LEGO",
     "description": "Convert an OBJ mesh into LEGO bricks: parts list, "

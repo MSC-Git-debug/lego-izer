@@ -13,6 +13,10 @@ import math
 import os
 from dataclasses import dataclass
 
+# Interface version of this module; the add-on checks it to detect
+# stale mixed installs (old lego_core.py next to a new __init__.py).
+CORE_VERSION = 2
+
 STUD = 8.0      # mm, horizontal pitch between studs
 BRICK_H = 9.6   # mm, height of a standard brick
 PLATE_H = 3.2   # mm, height of a plate
