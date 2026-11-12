@@ -19,7 +19,7 @@ from .lego_colors import LEGO_COLORS, LDRAW_CODE
 bl_info = {
     "name": "LEGO-izer (OBJ to bricks)",
     "author": "lego-izer",
-    "version": (1, 5, 0),
+    "version": (1, 6, 0),
     "blender": (3, 0, 0),
     "location": "3D View > Sidebar (N) > LEGO",
     "description": "Convert an OBJ mesh into LEGO bricks: parts list, "
@@ -154,9 +154,17 @@ def convert(input_path=None, out_dir="lego_out", units="m", scale_mode="UNITS",
               f"scene unit = {mm_per_unit:.2f} mm/unit")
     else:
         mm_per_unit = MM_PER_UNIT[units]
-    bb_min, bb_max, note = compute_scale(
+    bb_min, bb_max, factor, note = compute_scale(
         (min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs)),
         mm_per_unit, scale_mode, scale_value)
+
+    total_scale = mm_per_unit * factor
+    if total_scale != 1.0:
+        all_verts = [v * total_scale for v in all_verts]
+        xs = [v.x for v in all_verts]
+        ys = [v.y for v in all_verts]
+        zs = [v.z for v in all_verts]
+
     size_mm = tuple(bb_max[i] - bb_min[i] for i in range(3))
     print(note)
     print(f"LEGO size: {size_mm[0]:.1f} x {size_mm[1]:.1f} x {size_mm[2]:.1f} mm "

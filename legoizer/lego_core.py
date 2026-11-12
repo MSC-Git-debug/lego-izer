@@ -162,10 +162,12 @@ def decompose(voxels, dims):
 def compute_scale(bb_min, bb_max, mm_per_unit, scale_mode, scale_value):
     """Apply the requested scale to a bounding box (OBJ units -> mm).
 
-    scale_mode: 'UNITS' (as-is), 'SCALE' (factor, 0.01 = 1:100),
-    'HEIGHT_MM', 'WIDTH_MM' (fit real size in mm), 'STUDS_WIDE'
-    (exact stud count along X).
-    Returns (bb_min, bb_max, note) in mm.
+    scale_mode: 'UNITS' (as-is), 'SCALE' (factor, >= 1 means 1:N,
+    < 1 is a multiplier), 'HEIGHT_MM', 'WIDTH_MM' (fit real size in mm),
+    'STUDS_WIDE' (exact stud count along X).
+    Returns (bb_min, bb_max, factor, note): the box in mm and the extra
+    scale factor (mesh vertices must be scaled by mm_per_unit * factor
+    to match).
     """
     bb_min = tuple(c * mm_per_unit for c in bb_min)
     bb_max = tuple(c * mm_per_unit for c in bb_max)
@@ -194,7 +196,7 @@ def compute_scale(bb_min, bb_max, mm_per_unit, scale_mode, scale_value):
     if factor != 1.0:
         bb_min = tuple(c * factor for c in bb_min)
         bb_max = tuple(c * factor for c in bb_max)
-    return bb_min, bb_max, note
+    return bb_min, bb_max, factor, note
 
 
 # ------------------------------------------------------------------- colors
