@@ -19,7 +19,7 @@ from .lego_colors import LEGO_COLORS, LDRAW_CODE
 bl_info = {
     "name": "LEGO-izer (OBJ to bricks)",
     "author": "lego-izer",
-    "version": (1, 2, 0),
+    "version": (1, 3, 0),
     "blender": (3, 0, 0),
     "location": "3D View > Sidebar (N) > LEGO",
     "description": "Convert an OBJ mesh into LEGO bricks: parts list, "
@@ -155,13 +155,29 @@ def convert(input_path, out_dir, units="m", scale_mode="UNITS", scale_value=1.0,
         def find_nearest(point):
             return bvh.find_nearest(point)
 
+    if min(size_mm) < STUD:
+        print(f"WARNING: the scaled model is only "
+              f"{min(size_mm):.2f} mm thick in one dimension - smaller "
+              f"than one stud ({STUD} mm). Check the OBJ units setting; "
+              f"Blender's default OBJ export writes METERS.")
+
     print("Voxelizing on the LEGO grid...")
     voxels, dims = lego_core.voxelize(BVHAdapter, bb_min, bb_max, layer_h)
     print(f"Grid: {dims[0]} x {dims[1]} x {dims[2]} cells, "
           f"{len(voxels)} filled cells")
 
+    if not voxels:
+        raise RuntimeError(
+            "No grid cells were filled, so no bricks can be placed. "
+            "Either the mesh is not watertight (the ray test found no "
+            "interior) or the scaled model is smaller than one stud "
+            "(8 mm). Check the OBJ units and scale settings, and run "
+            "Mesh > Clean Up > Make Manifold on the source model.")
+
     print("Decomposing into bricks...")
     bricks = lego_core.decompose(voxels, dims)
+    if not bricks:
+        raise RuntimeError("Brick decomposition produced no bricks.")
     lego_core.assign_colors(bricks, BVHAdapter, poly_color_names,
                             default_color, bb_min, layer_h)
 
@@ -172,6 +188,13 @@ def convert(input_path, out_dir, units="m", scale_mode="UNITS", scale_value=1.0,
     lego_core.print_summary(bricks, layer_h, out_dir)
 
     if visualize:
+        if with_studs:
+            stud_count = sum(b.sx * b.sy for b in bricks)
+            if stud_count > 150_000:
+                print(f"Skipping studs: {stud_count} would be generated "
+                      f"(too much geometry). Uncheck 'Add studs' to silence "
+                      f"this, or reduce the scale.")
+                with_studs = False
         build_visualization(bricks, bb_min, layer_h, with_studs)
         bpy.ops.wm.save_as_mainfile(
             filepath=os.path.join(out_dir, f"{base_name}_lego.blend"))
@@ -184,36 +207,39 @@ def build_visualization(bricks, bb_min, layer_h, with_studs):
     import bmesh
     from mathutils import Vector, Matrix
 
-    collection = bpy.data.collections.new("LEGO")
-    bpy.context.scene.collection.children.link(collection)
-
+    gap = 0.15
+    collection = None
     by_color = {}
     for b in bricks:
         by_color.setdefault(b.color, []).append(b)
 
     for color, group in by_color.items():
+        if collection is None:
+            collection = bpy.data.collections.new("LEGO")
+            bpy.context.scene.collection.children.link(collection)
         bm = bmesh.new()
         for b in group:
-            x0 = bb_min[0] + b.x * STUD
-            y0 = bb_min[1] + b.y * STUD
-            z0 = bb_min[2] + b.z * layer_h
-            sx = b.sx * STUD
-            sy = b.sy * STUD
+            sx = b.sx * STUD - 2 * gap
+            sy = b.sy * STUD - 2 * gap
+            sz = layer_h - 2 * gap
+            x0 = bb_min[0] + b.x * STUD + gap
+            y0 = bb_min[1] + b.y * STUD + gap
+            z0 = bb_min[2] + b.z * layer_h + gap
             bmesh.ops.create_cube(
                 bm, size=1.0, calc_uvs=True,
                 matrix=(Matrix.Translation(Vector((x0 + sx / 2, y0 + sy / 2,
-                                                   z0 + layer_h / 2)))
-                        @ Matrix.Diagonal(Vector((sx, sy, layer_h, 1.0)))))
+                                                   z0 + sz / 2)))
+                        @ Matrix.Diagonal(Vector((sx, sy, sz, 1.0)))))
             if with_studs:
                 for dx in range(b.sx):
                     for dy in range(b.sy):
-                        cx = x0 + (dx + 0.5) * STUD
-                        cy = y0 + (dy + 0.5) * STUD
+                        cx = bb_min[0] + (b.x + dx + 0.5) * STUD
+                        cy = bb_min[1] + (b.y + dy + 0.5) * STUD
                         bmesh.ops.create_cone(
                             bm, cap_ends=True, segments=16,
                             radius1=2.4, radius2=2.4, depth=1.8,
                             matrix=Matrix.Translation(
-                                Vector((cx, cy, z0 + layer_h + 0.9))))
+                                Vector((cx, cy, z0 + sz + 0.9))))
         mesh = bpy.data.meshes.new(f"LEGO_{color.replace(' ', '_')}")
         bm.to_mesh(mesh)
         bm.free()
@@ -276,8 +302,9 @@ class LEGOIZER_OT_convert(bpy.types.Operator):
         name="Build LEGO model in scene", default=True,
         description="Create the brick model as mesh objects in Blender")
     with_studs: bpy.props.BoolProperty(
-        name="Add studs", default=False,
-        description="Add cylinder studs to the visualization (slow)")
+        name="Add studs", default=True,
+        description="Add cylinder studs to the visualization (auto-skipped "
+                    "if it would create more than 150k studs)")
 
     def invoke(self, context, event):
         context.window_manager.fileselect_add(self)
@@ -383,8 +410,9 @@ class LEGOIZER_Props(bpy.types.PropertyGroup):
         name="Build LEGO model in scene", default=True,
         description="Create the brick model as mesh objects in Blender")
     with_studs: bpy.props.BoolProperty(
-        name="Add studs", default=False,
-        description="Add cylinder studs to the visualization (slow)")
+        name="Add studs", default=True,
+        description="Add cylinder studs to the visualization (auto-skipped "
+                    "if it would create more than 150k studs)")
 
 
 classes = (LEGOIZER_Props, LEGOIZER_OT_convert, LEGOIZER_OT_convert_from_panel,

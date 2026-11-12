@@ -126,6 +126,13 @@ conversion runs.
 
 ## Limitations & tips
 
+- The visualization merges all bricks of one color into a single mesh
+  object (fast) and shrinks each brick by 0.15 mm so seams between bricks
+  are visible; studs are added by default (auto-skipped above 150k studs).
+- If you get "No grid cells were filled": the mesh is not watertight, or
+  the scaled model is under 8 mm because of a units mismatch. Blender's
+  default OBJ export writes METERS - with the wrong unit a 1:15 scale can
+  shrink a model to sub-millimeter size.
 - Round/organic shapes become stepped - that is inherent to LEGO. Plates
   give 3x finer vertical resolution but ~3x more parts.
 - Check the printed summary before buying; scale down if the part count is
