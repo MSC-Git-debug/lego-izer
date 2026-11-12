@@ -99,25 +99,36 @@ def voxelize(bvh, bb_min, bb_max, layer_h=BRICK_H, progress=True):
             y = bb_min[1] + (j + 0.5) * STUD
             z = bb_max[2] + eps
             z_floor = bb_min[2]
-            spans = []
-            inside = False
-            span_start = None
+            hits = []
             for _ in range(100000):
                 hit = bvh.ray_cast((x, y, z), down, distance=z - z_floor + 2 * eps)
                 if hit is None:
                     break
                 loc, normal = hit[0], hit[1]
-                z_hit = loc[2]
-                entering = normal[2] > 0.0
+                hits.append((loc[2], normal[2] > 0.0))
+                z = loc[2] - eps
+
+            spans = []
+            inside = False
+            span_start = None
+            for z_hit, entering in hits:
                 if entering and not inside:
                     inside = True
                     span_start = z_hit
                 elif not entering and inside:
                     inside = False
                     spans.append((z_hit, span_start))
-                z = z_hit - eps
             if inside:
                 spans.append((span_start, z_floor))
+
+            if not spans and len(hits) >= 2:
+                # Normals are unreliable (non-watertight mesh, flipped or
+                # inconsistent normals). Fall back to pairing the hit
+                # heights, which bounds solid spans without normals.
+                zs = sorted(h[0] for h in hits)
+                spans = list(zip(zs[::2], zs[1::2]))
+                if len(zs) % 2 == 1:
+                    spans.append((zs[-1], z_floor))
 
             for z1, z2 in spans:
                 k_first = int(math.floor((z1 - bb_min[2]) / layer_h - 0.5 + 1e-9)) + 1

@@ -210,17 +210,29 @@ def convert(input_path=None, out_dir="lego_out", units="m", scale_mode="UNITS",
               f"Blender's default OBJ export writes METERS.")
 
     print("Voxelizing on the LEGO grid...")
-    voxels, dims = lego_core.voxelize(BVHAdapter, bb_min, bb_max, layer_h)
+    try:
+        voxels, dims = lego_core.voxelize(BVHAdapter, bb_min, bb_max, layer_h)
+    except RuntimeError as exc:
+        if "Grid too large" in str(exc):
+            widest = max(size_mm[0], size_mm[1])
+            suggested = max(10, min(250, round(widest / STUD / 10) * 10))
+            ratio = round(widest / (suggested * STUD))
+            raise RuntimeError(
+                f"{exc} Suggestion: set Scale = 'Studs wide' with value "
+                f"{suggested} (about 1:{ratio}), or 'Scale factor' = "
+                f"{ratio} (which now means 1:{ratio}).") from exc
+        raise
     print(f"Grid: {dims[0]} x {dims[1]} x {dims[2]} cells, "
           f"{len(voxels)} filled cells")
 
     if not voxels:
         raise RuntimeError(
             "No grid cells were filled, so no bricks can be placed. "
-            "Either the mesh is not watertight (the ray test found no "
-            "interior) or the scaled model is smaller than one stud "
-            "(8 mm). Check the OBJ units and scale settings, and run "
-            "Mesh > Clean Up > Make Manifold on the source model.")
+            "Either the scaled model is smaller than one stud (8 mm) - "
+            "check the Measured: line in the panel and the OBJ units - "
+            "or the mesh has no closed surface at all (e.g. a single "
+            "plane). Solid, manifold geometry is required; try "
+            "Mesh > Clean Up > Make Manifold or a Solidify modifier.")
 
     print("Decomposing into bricks...")
     bricks = lego_core.decompose(voxels, dims)
