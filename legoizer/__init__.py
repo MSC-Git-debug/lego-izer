@@ -19,7 +19,7 @@ from .lego_colors import LEGO_COLORS, LDRAW_CODE
 bl_info = {
     "name": "LEGO-izer (OBJ to bricks)",
     "author": "lego-izer",
-    "version": (1, 1, 1),
+    "version": (1, 2, 0),
     "blender": (3, 0, 0),
     "location": "3D View > Sidebar (N) > LEGO",
     "description": "Convert an OBJ mesh into LEGO bricks: parts list, "

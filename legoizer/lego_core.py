@@ -17,6 +17,10 @@ STUD = 8.0      # mm, horizontal pitch between studs
 BRICK_H = 9.6   # mm, height of a standard brick
 PLATE_H = 3.2   # mm, height of a plate
 
+# Safety limits so a bad scale cannot freeze Blender for hours.
+MAX_COLUMNS = 4_000_000        # nx * ny ray-cast columns
+MAX_CELLS = 20_000_000         # nx * ny * nz grid cells
+
 # (sx, sy) -> (brick design id, plate design id, part name)
 # sx = studs along model X, sy = studs along model Y.
 BRICK_PARTS = {
@@ -62,7 +66,7 @@ class Brick:
 
 # ---------------------------------------------------------------- voxelization
 
-def voxelize(bvh, bb_min, bb_max, layer_h=BRICK_H):
+def voxelize(bvh, bb_min, bb_max, layer_h=BRICK_H, progress=True):
     """Sample the mesh on the LEGO grid, one downward ray per stud column.
 
     bvh: object with ray_cast(origin, direction, distance) ->
@@ -73,11 +77,23 @@ def voxelize(bvh, bb_min, bb_max, layer_h=BRICK_H):
     nx = max(1, int(math.ceil((bb_max[0] - bb_min[0]) / STUD - 1e-6)))
     ny = max(1, int(math.ceil((bb_max[1] - bb_min[1]) / STUD - 1e-6)))
     nz = max(1, int(math.ceil((bb_max[2] - bb_min[2]) / layer_h - 1e-6)))
+
+    est_cells = nx * ny * nz
+    if nx * ny > MAX_COLUMNS or est_cells > MAX_CELLS:
+        raise RuntimeError(
+            f"Grid too large: {nx} x {ny} x {nz} cells "
+            f"({nx * ny} columns). Reduce the scale or use a smaller "
+            f"model (limits: {MAX_COLUMNS} columns, {MAX_CELLS} cells).")
+
     voxels = set()
     eps = 1e-4
     down = (0.0, 0.0, -1.0)
+    progress_step = max(1, nx // 20)
 
     for i in range(nx):
+        if progress and i % progress_step == 0:
+            print(f"  voxelizing... {100 * i // nx}% "
+                  f"(row {i + 1}/{nx})", flush=True)
         x = bb_min[0] + (i + 0.5) * STUD
         for j in range(ny):
             y = bb_min[1] + (j + 0.5) * STUD
@@ -146,8 +162,12 @@ def compute_scale(bb_min, bb_max, mm_per_unit, scale_mode, scale_value):
 
     factor = 1.0
     if scale_mode == "SCALE":
-        factor = scale_value
-        note += f" | scale factor {scale_value:g} (1:{1/scale_value:g})"
+        if scale_value >= 1.0:
+            factor = 1.0 / scale_value
+            note += f" | scale 1:{scale_value:g} (factor {factor:g})"
+        else:
+            factor = scale_value
+            note += f" | scale factor {scale_value:g} (1:{1/scale_value:g})"
     elif scale_mode == "HEIGHT_MM":
         factor = scale_value / size[2]
         note += f" | scaled to {scale_value:g} mm height (1:{size[2]/scale_value:g})"

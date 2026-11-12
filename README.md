@@ -63,10 +63,18 @@ The scale options size the LEGO model before voxelization:
 | Option | Meaning | Example for 10 x 15 m |
 |---|---|---|
 | `Studs wide` / `--studs-wide N` | Exact stud count along X | `--studs-wide 10` -> 80 x 120 mm, scale 1:125 |
-| `Scale factor` / `--scale F` | Uniform factor | `--scale 0.01` -> 1:100 -> 100 x 150 mm (12.5 x 18.75 studs) |
+| `Scale factor` / `--scale F` | **F >= 1 means 1:F** (e.g. `15` = 1:15); F < 1 is a multiplier (e.g. `0.01` = 1:100) | `--scale 15` -> 667 x 1000 mm (83 x 125 studs) |
 | `Width (mm)` / `--width-mm` | Fit real width in mm | `--width-mm 100` = same as 1:100 |
 | `Height (mm)` / `--height-mm` | Fit real height in mm | useful when height matters most |
 | `As-is` | OBJ units taken literally | 10 m model -> 10000 mm -> 1250 studs (huge!) |
+
+**Safety limits:** the conversion refuses grids larger than 4 million stud
+columns or 20 million cells and raises a clear "Grid too large" error
+instead of freezing. For reference, at 1:15 a 10 x 15 m model is
+~83 x 125 studs - fine; at 1:1 it would be 1250 x 1875 studs - refused.
+During voxelization a progress percentage prints to the console every few
+percent, so a long run does not look frozen (Blender stays unresponsive
+while the operator runs - that is normal; watch the System Console).
 
 Practical guidance for a 10 x 15 m building:
 
