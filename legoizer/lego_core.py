@@ -120,6 +120,7 @@ def voxelize(bvh, bb_min, bb_max, layer_h=BRICK_H, progress=True):
                     spans.append((z_hit, span_start))
             if inside:
                 spans.append((span_start, z_floor))
+            spans = [(z1, z2) for z1, z2 in spans if z2 - z1 > 1e-9]
 
             if not spans and len(hits) >= 2:
                 # Normals are unreliable (non-watertight mesh, flipped or
