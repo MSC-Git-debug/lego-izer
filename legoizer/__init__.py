@@ -1,0 +1,448 @@
+"""LEGO-izer: convert an OBJ model into real, buyable LEGO bricks.
+
+Blender add-on (works in 3.x, 4.x and 5.x) plus headless CLI.
+
+Add-on: Edit > Preferences > Add-ons > Install from Disk (zip this folder),
+then use the LEGO panel in the 3D View sidebar (N key).
+
+Outputs: parts.csv (shopping list), model.ldr (LDraw for LeoCAD/Stud.io),
+model.blend visualization (optional).
+"""
+
+import bpy
+import os
+import json
+
+from . import lego_core
+from .lego_colors import LEGO_COLORS, LDRAW_CODE
+
+bl_info = {
+    "name": "LEGO-izer (OBJ to bricks)",
+    "author": "lego-izer",
+    "version": (1, 1, 0),
+    "blender": (3, 0, 0),
+    "location": "3D View > Sidebar (N) > LEGO",
+    "description": "Convert an OBJ mesh into LEGO bricks: parts list, "
+                   "colors and LDraw model",
+    "category": "Import-Export",
+}
+
+STUD = lego_core.STUD
+MM_PER_UNIT = {"mm": 1.0, "cm": 10.0, "m": 1000.0, "in": 25.4}
+
+
+# ------------------------------------------------------------- conversion
+
+def import_obj(path):
+    before = set(bpy.data.objects)
+    try:
+        bpy.ops.wm.obj_import(filepath=path)      # Blender 4.x / 5.x
+    except AttributeError:
+        bpy.ops.import_scene.obj(filepath=path)   # Blender 3.x
+    return [o for o in bpy.data.objects if o not in before]
+
+
+def world_mesh_data(obj, depsgraph):
+    eval_obj = obj.evaluated_get(depsgraph)
+    mesh = eval_obj.to_mesh()
+    matrix = eval_obj.matrix_world
+    verts = [matrix @ v.co for v in mesh.vertices]
+    polys = [tuple(p.vertices) for p in mesh.polygons]
+    mat_indices = [p.material_index for p in mesh.polygons]
+    slot_count = len(eval_obj.material_slots)
+    eval_obj.to_mesh_clear()
+    return verts, polys, mat_indices, slot_count
+
+
+def material_rgb(material):
+    if material is None:
+        return (0.7, 0.7, 0.7)
+    if material.use_nodes:
+        for node in material.node_tree.nodes:
+            if node.type == "BSDF_PRINCIPLED":
+                if any(node.inputs["Base Color"].links):
+                    return tuple(material.diffuse_color[:3])
+                return tuple(node.inputs["Base Color"].default_value[:3])
+    return tuple(material.diffuse_color[:3])
+
+
+def compute_scale(bb_min, bb_max, units, scale_mode, scale_value):
+    """Wrapper around lego_core.compute_scale taking a unit name."""
+    return lego_core.compute_scale(bb_min, bb_max, MM_PER_UNIT[units],
+                                   scale_mode, scale_value)
+
+
+def convert(input_path, out_dir, units="m", scale_mode="UNITS", scale_value=1.0,
+            layer="brick", visualize=False, with_studs=False, color_map=None,
+            base_name="model"):
+    """Full OBJ -> LEGO pipeline. Returns (bricks, bb_min, layer_h)."""
+    layer_h = lego_core.PLATE_H if layer == "plate" else lego_core.BRICK_H
+    os.makedirs(out_dir, exist_ok=True)
+
+    objects = import_obj(input_path)
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+
+    all_verts, all_polys, all_poly_colors = [], [], []
+    material_rgb_by_slot, slot_owner = [], []
+    for obj in objects:
+        if obj.type != "MESH":
+            continue
+        verts, polys, mat_indices, slot_count = world_mesh_data(obj, depsgraph)
+        base = len(all_verts)
+        all_verts.extend(verts)
+        for p in polys:
+            all_polys.append(tuple(base + i for i in p))
+        for m in range(slot_count):
+            mat = obj.material_slots[m].material if m < len(obj.material_slots) else None
+            material_rgb_by_slot.append(material_rgb(mat))
+            slot_owner.append((obj.name, mat.name if mat else ""))
+        first_slot = len(material_rgb_by_slot) - slot_count
+        for idx in mat_indices:
+            all_poly_colors.append(first_slot + idx)
+
+    if not all_polys:
+        raise RuntimeError("No mesh geometry found in the OBJ file.")
+
+    xs = [v.x for v in all_verts]
+    ys = [v.y for v in all_verts]
+    zs = [v.z for v in all_verts]
+    bb_min, bb_max, note = compute_scale(
+        (min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs)),
+        units, scale_mode, scale_value)
+    size_mm = tuple(bb_max[i] - bb_min[i] for i in range(3))
+    print(note)
+    print(f"LEGO size: {size_mm[0]:.1f} x {size_mm[1]:.1f} x {size_mm[2]:.1f} mm "
+          f"({size_mm[0]/STUD:.1f} x {size_mm[1]/STUD:.1f} studs, "
+          f"{size_mm[2]/layer_h:.1f} layers)")
+
+    from mathutils.bvhtree import BVHTree
+    bvh = BVHTree.FromPolygons(all_verts, all_polys)
+
+    overrides = {}
+    if color_map:
+        if os.path.isfile(color_map):
+            with open(color_map, encoding="utf-8") as fh:
+                overrides = json.load(fh)
+        else:
+            for pair in color_map.split(","):
+                name, color = pair.split("=", 1)
+                overrides[name.strip()] = color.strip()
+
+    resolved = []
+    for slot, rgb in enumerate(material_rgb_by_slot):
+        obj_name, mat_name = slot_owner[slot]
+        if mat_name in overrides:
+            color = overrides[mat_name]
+            if color not in LDRAW_CODE:
+                raise RuntimeError(
+                    f"Unknown LEGO color '{color}' for material '{mat_name}'. "
+                    f"Valid: {', '.join(LDRAW_CODE)}")
+        else:
+            color = lego_core.nearest_lego_color(rgb, LEGO_COLORS)
+            print(f"Material '{mat_name}' (object '{obj_name}') -> {color}")
+        resolved.append(color)
+
+    default_color = max(set(resolved), key=resolved.count)
+    poly_color_names = [resolved[i] for i in all_poly_colors]
+
+    class BVHAdapter:
+        @staticmethod
+        def ray_cast(origin, direction, distance):
+            hit = bvh.ray_cast(origin, direction, distance)
+            return hit if hit is None or hit[0] is not None else None
+
+        @staticmethod
+        def find_nearest(point):
+            return bvh.find_nearest(point)
+
+    print("Voxelizing on the LEGO grid...")
+    voxels, dims = lego_core.voxelize(BVHAdapter, bb_min, bb_max, layer_h)
+    print(f"Grid: {dims[0]} x {dims[1]} x {dims[2]} cells, "
+          f"{len(voxels)} filled cells")
+
+    print("Decomposing into bricks...")
+    bricks = lego_core.decompose(voxels, dims)
+    lego_core.assign_colors(bricks, BVHAdapter, poly_color_names,
+                            default_color, bb_min, layer_h)
+
+    lego_core.write_parts_csv(os.path.join(out_dir, f"{base_name}_parts.csv"),
+                              bricks)
+    lego_core.write_ldr(os.path.join(out_dir, f"{base_name}.ldr"), bricks,
+                        bb_min, layer_h, LDRAW_CODE)
+    lego_core.print_summary(bricks, layer_h, out_dir)
+
+    if visualize:
+        build_visualization(bricks, bb_min, layer_h, with_studs)
+        bpy.ops.wm.save_as_mainfile(
+            filepath=os.path.join(out_dir, f"{base_name}_lego.blend"))
+        print(f"Saved visualization: "
+              f"{os.path.join(out_dir, f'{base_name}_lego.blend')}")
+    return bricks, bb_min, layer_h
+
+
+def build_visualization(bricks, bb_min, layer_h, with_studs):
+    import bmesh
+    from mathutils import Vector, Matrix
+
+    collection = bpy.data.collections.new("LEGO")
+    bpy.context.scene.collection.children.link(collection)
+
+    by_color = {}
+    for b in bricks:
+        by_color.setdefault(b.color, []).append(b)
+
+    for color, group in by_color.items():
+        bm = bmesh.new()
+        for b in group:
+            x0 = bb_min[0] + b.x * STUD
+            y0 = bb_min[1] + b.y * STUD
+            z0 = bb_min[2] + b.z * layer_h
+            sx = b.sx * STUD
+            sy = b.sy * STUD
+            bmesh.ops.create_cube(
+                bm, size=1.0, calc_uvs=True,
+                matrix=(Matrix.Translation(Vector((x0 + sx / 2, y0 + sy / 2,
+                                                   z0 + layer_h / 2)))
+                        @ Matrix.Diagonal(Vector((sx, sy, layer_h, 1.0)))))
+            if with_studs:
+                for dx in range(b.sx):
+                    for dy in range(b.sy):
+                        cx = x0 + (dx + 0.5) * STUD
+                        cy = y0 + (dy + 0.5) * STUD
+                        bmesh.ops.create_cone(
+                            bm, cap_ends=True, segments=16,
+                            radius1=2.4, radius2=2.4, depth=1.8,
+                            matrix=Matrix.Translation(
+                                Vector((cx, cy, z0 + layer_h + 0.9))))
+        mesh = bpy.data.meshes.new(f"LEGO_{color.replace(' ', '_')}")
+        bm.to_mesh(mesh)
+        bm.free()
+        obj = bpy.data.objects.new(mesh.name, mesh)
+        collection.objects.link(obj)
+        mat = bpy.data.materials.new(mesh.name)
+        mat.use_nodes = True
+        bsdf = mat.node_tree.nodes.get("Principled BSDF")
+        if bsdf:
+            bsdf.inputs["Base Color"].default_value = _rgb(color) + (1.0,)
+        obj.data.materials.append(mat)
+
+
+def _rgb(color_name):
+    for name, _code, rgb in LEGO_COLORS:
+        if name == color_name:
+            return rgb
+    return (0.8, 0.8, 0.8)
+
+
+# ------------------------------------------------------------------ add-on UI
+
+class LEGOIZER_OT_convert(bpy.types.Operator):
+    bl_idname = "legoizer.convert"
+    bl_label = "Convert to LEGO bricks"
+    bl_description = "Voxelize the OBJ on the LEGO grid, decompose into " \
+                     "real parts and write parts.csv + model.ldr"
+    bl_options = {"REGISTER", "UNDO"}
+
+    filepath: bpy.props.StringProperty(
+        name="OBJ file", subtype="FILE_PATH",
+        description="The .obj file to convert")
+    out_dir: bpy.props.StringProperty(
+        name="Output folder", subtype="DIR_PATH", default="//lego_out")
+    units: bpy.props.EnumProperty(
+        name="OBJ units", items=[
+            ("mm", "mm", "OBJ file is in millimeters"),
+            ("cm", "cm", "OBJ file is in centimeters"),
+            ("m", "m", "OBJ file is in meters (Blender default export)"),
+            ("in", "inches", "OBJ file is in inches")],
+        default="m")
+    scale_mode: bpy.props.EnumProperty(
+        name="Scale", items=[
+            ("UNITS", "As-is", "Use the model at its OBJ unit size"),
+            ("SCALE", "Scale factor", "Multiply by a factor (0.01 = 1:100)"),
+            ("HEIGHT_MM", "Height (mm)", "Fit the real height in mm"),
+            ("WIDTH_MM", "Width (mm)", "Fit the real width in mm"),
+            ("STUDS_WIDE", "Studs wide", "Fit an exact number of studs along X")],
+        default="STUDS_WIDE",
+        description="How to size the LEGO model")
+    scale_value: bpy.props.FloatProperty(
+        name="Scale value", default=15.0, min=0.0001, soft_max=1000.0,
+        description="Meaning depends on Scale: factor, mm, or studs")
+    layer: bpy.props.EnumProperty(
+        name="Layer", items=[
+            ("brick", "Bricks (9.6 mm)", "Standard brick height layers"),
+            ("plate", "Plates (3.2 mm)", "3x finer detail, many more parts")],
+        default="brick")
+    visualize: bpy.props.BoolProperty(
+        name="Build LEGO model in scene", default=True,
+        description="Create the brick model as mesh objects in Blender")
+    with_studs: bpy.props.BoolProperty(
+        name="Add studs", default=False,
+        description="Add cylinder studs to the visualization (slow)")
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        if not self.filepath:
+            self.report({"ERROR"}, "Pick an .obj file first")
+            return {"CANCELLED"}
+        out_dir = bpy.path.abspath(self.out_dir)
+        try:
+            convert(self.filepath, out_dir, units=self.units,
+                    scale_mode=self.scale_mode, scale_value=self.scale_value,
+                    layer=self.layer, visualize=self.visualize,
+                    with_studs=self.with_studs)
+        except Exception as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        self.report({"INFO"},
+                    f"Done - parts.csv and model.ldr written to {out_dir}")
+        return {"FINISHED"}
+
+
+class LEGOIZER_PT_panel(bpy.types.Panel):
+    bl_label = "LEGO-izer"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "LEGO"
+
+    def draw(self, context):
+        layout = self.layout
+        props = context.scene.legoizer_props
+        layout.prop(props, "filepath")
+        layout.prop(props, "out_dir")
+        layout.prop(props, "units")
+        layout.prop(props, "scale_mode")
+        if props.scale_mode != "UNITS":
+            layout.prop(props, "scale_value")
+        layout.prop(props, "layer")
+        layout.prop(props, "visualize")
+        if props.visualize:
+            layout.prop(props, "with_studs")
+        layout.operator("legoizer.convert_from_panel", icon="BRICKS")
+
+
+class LEGOIZER_OT_convert_from_panel(bpy.types.Operator):
+    bl_idname = "legoizer.convert_from_panel"
+    bl_label = "Convert to LEGO"
+    bl_description = "Run the conversion with the panel settings"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        props = context.scene.legoizer_props
+        if not props.filepath:
+            self.report({"ERROR"}, "Pick an .obj file first")
+            return {"CANCELLED"}
+        out_dir = bpy.path.abspath(props.out_dir)
+        try:
+            convert(props.filepath, out_dir, units=props.units,
+                    scale_mode=props.scale_mode, scale_value=props.scale_value,
+                    layer=props.layer, visualize=props.visualize,
+                    with_studs=props.with_studs)
+        except Exception as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        self.report({"INFO"},
+                    f"Done - parts.csv and model.ldr written to {out_dir}")
+        return {"FINISHED"}
+
+
+class LEGOIZER_Props(bpy.types.PropertyGroup):
+    filepath: bpy.props.StringProperty(
+        name="OBJ file", subtype="FILE_PATH",
+        description="The .obj file to convert")
+    out_dir: bpy.props.StringProperty(
+        name="Output folder", subtype="DIR_PATH", default="//lego_out")
+    units: bpy.props.EnumProperty(
+        name="OBJ units", items=[
+            ("mm", "mm", "OBJ file is in millimeters"),
+            ("cm", "cm", "OBJ file is in centimeters"),
+            ("m", "m", "OBJ file is in meters (Blender default export)"),
+            ("in", "inches", "OBJ file is in inches")],
+        default="m")
+    scale_mode: bpy.props.EnumProperty(
+        name="Scale", items=[
+            ("UNITS", "As-is", "Use the model at its OBJ unit size"),
+            ("SCALE", "Scale factor", "Multiply by a factor (0.01 = 1:100)"),
+            ("HEIGHT_MM", "Height (mm)", "Fit the real height in mm"),
+            ("WIDTH_MM", "Width (mm)", "Fit the real width in mm"),
+            ("STUDS_WIDE", "Studs wide", "Fit an exact number of studs along X")],
+        default="STUDS_WIDE",
+        description="How to size the LEGO model")
+    scale_value: bpy.props.FloatProperty(
+        name="Scale value", default=15.0, min=0.0001, soft_max=1000.0,
+        description="Meaning depends on Scale: factor, mm, or studs")
+    layer: bpy.props.EnumProperty(
+        name="Layer", items=[
+            ("brick", "Bricks (9.6 mm)", "Standard brick height layers"),
+            ("plate", "Plates (3.2 mm)", "3x finer detail, many more parts")],
+        default="brick")
+    visualize: bpy.props.BoolProperty(
+        name="Build LEGO model in scene", default=True,
+        description="Create the brick model as mesh objects in Blender")
+    with_studs: bpy.props.BoolProperty(
+        name="Add studs", default=False,
+        description="Add cylinder studs to the visualization (slow)")
+
+
+classes = (LEGOIZER_Props, LEGOIZER_OT_convert, LEGOIZER_OT_convert_from_panel,
+           LEGOIZER_PT_panel)
+
+
+def register():
+    for cls in classes:
+        bpy.utils.register_class(cls)
+    bpy.types.Scene.legoizer_props = bpy.props.PointerProperty(type=LEGOIZER_Props)
+
+
+def unregister():
+    del bpy.types.Scene.legoizer_props
+    for cls in reversed(classes):
+        bpy.utils.unregister_class(cls)
+
+
+# ------------------------------------------------------------------ headless CLI
+
+def run_cli(argv):
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="Convert an OBJ model into LEGO bricks")
+    parser.add_argument("input", help="input .obj file")
+    parser.add_argument("--out", default="lego_out", help="output directory")
+    parser.add_argument("--units", default="m", choices=list(MM_PER_UNIT),
+                        help="unit of the OBJ file (Blender default export is m)")
+    parser.add_argument("--scale", type=float, default=None,
+                        help="scale factor, e.g. 0.01 for 1:100")
+    parser.add_argument("--height-mm", type=float, default=None,
+                        help="fit the real height to this many mm")
+    parser.add_argument("--width-mm", type=float, default=None,
+                        help="fit the real width to this many mm")
+    parser.add_argument("--studs-wide", type=float, default=None,
+                        help="fit an exact number of studs along X")
+    parser.add_argument("--height", default="brick", choices=["brick", "plate"],
+                        help="layer height: bricks (9.6mm) or plates (3.2mm)")
+    parser.add_argument("--visualize", action="store_true",
+                        help="build the brick model in Blender and save a .blend")
+    parser.add_argument("--studs", action="store_true",
+                        help="with --visualize: also add cylinder studs (slow)")
+    parser.add_argument("--map", default=None,
+                        help="material->LEGO color overrides, JSON file or "
+                             "'Material=Color,Material2=Color2'")
+    args = parser.parse_args(argv)
+
+    scale_mode, scale_value = "UNITS", 1.0
+    if args.scale is not None:
+        scale_mode, scale_value = "SCALE", args.scale
+    elif args.height_mm is not None:
+        scale_mode, scale_value = "HEIGHT_MM", args.height_mm
+    elif args.width_mm is not None:
+        scale_mode, scale_value = "WIDTH_MM", args.width_mm
+    elif args.studs_wide is not None:
+        scale_mode, scale_value = "STUDS_WIDE", args.studs_wide
+
+    base_name = os.path.splitext(os.path.basename(args.input))[0]
+    convert(args.input, args.out, units=args.units, scale_mode=scale_mode,
+            scale_value=scale_value, layer=args.height,
+            visualize=args.visualize, with_studs=args.studs,
+            color_map=args.map, base_name=base_name)
