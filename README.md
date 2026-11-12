@@ -16,14 +16,19 @@ native importer required since 4.0; falls back to `import_scene.obj` on 3.x).
 
 ## Step-by-step in Blender 5.3 (GUI)
 
-### 1. Prepare and export your model
+### 1. Prepare your model
 
-1. Open your model in Blender. Make sure it is **watertight/manifold**:
-   select the mesh, enter Edit Mode, `Mesh > Clean Up > Make Manifold`
-   (non-watertight meshes break the inside/outside ray test).
-2. `File > Export > Wavefront (.obj)`. Keep the default forward/up axes and
-   note the scale: with default scene units the OBJ is written in
-   **meters**. Click **Export OBJ**.
+1. Open (or model) your part in Blender. Make sure it is
+   **watertight/manifold**: select the mesh, enter Edit Mode,
+   `Mesh > Clean Up > Make Manifold` (non-watertight meshes break the
+   inside/outside ray test).
+2. Note the scene units: with the default setting Blender models are in
+   **meters**.
+
+You can convert either the objects **selected in the viewport** (default,
+no export/import needed - modifiers are evaluated) or an exported
+**OBJ file**. For OBJ export: `File > Export > Wavefront (.obj)`, keep the
+default axes, note that it writes meters by default.
 
 ### 2. Install the add-on
 
@@ -37,17 +42,18 @@ native importer required since 4.0; falls back to `import_scene.obj` on 3.x).
 
 ### 3. Convert
 
-1. In the 3D Viewport press **N** to open the sidebar > **LEGO** tab.
-2. Set:
-   - **OBJ file** - your exported .obj
+1. Select the object(s) to convert in the viewport or outliner.
+2. In the 3D Viewport press **N** to open the sidebar > **LEGO** tab.
+3. Set:
+   - **Source** - `Selected objects` (default) or `OBJ file`
+   - **OBJ file / units** - only for the OBJ-file source
    - **Output folder** - where parts.csv / .ldr / .blend are written
-   - **OBJ units** - `m` for Blender-exported files (see step 1)
    - **Scale** - see "Choosing the scale" below
    - **Layer** - Bricks (9.6 mm) or Plates (3.2 mm)
    - **Build LEGO model in scene** - creates the brick model in Blender
-3. Click **Convert to LEGO**. The System Console
+4. Click **Convert to LEGO**. The System Console
    (`Window > Toggle System Console`) prints progress and the summary.
-4. Buy the parts from `parts.csv` (see "Buying the bricks") and open
+5. Buy the parts from `parts.csv` (see "Buying the bricks") and open
    `model.ldr` in LeoCAD/Stud.io for the build.
 
 ### Headless alternative (same engine)
